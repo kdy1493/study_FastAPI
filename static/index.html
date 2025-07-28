@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FastAPI WebRTC + YOLO</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .video-container { display: flex; gap: 20px; }
+        video { border: 1px solid black; max-width: 480px; }
+        h2 { margin-top: 0; }
+        .container { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h1>FastAPI 실시간 객체 탐지 (WebRTC + YOLO)</h1>
+    <p>
+        'Start' 버튼을 누르면 웹캠이 켜지고 영상이 서버로 전송됩니다.<br>
+        서버는 YOLO 모델로 객체를 탐지하여 결과 영상을 다시 보내줍니다.
+    </p>
+    <button id="start" onclick="start()">Start</button>
+    <button id="stop" onclick="stop()" style="display:none">Stop</button>
+
+    <div class="video-container">
+        <div class="container">
+            <h2>웹캠 (원본)</h2>
+            <video id="local-video" autoplay="true" muted="true"></video>
+        </div>
+        <div class="container">
+            <h2>서버 처리 결과 (YOLO)</h2>
+            <video id="remote-video" autoplay="true"></video>
+        </div>
+    </div>
+
+    <script>
+        var pc = null; // RTCPeerConnection
+
+        function negotiate() {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+            return pc.createOffer().then(function(offer) {
+                return pc.setLocalDescription(offer);
+            }).then(function() {
+                // offer를 서버로 보내기 위해 잠시 대기
+                return new Promise(function(resolve) {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        function checkState() {
+                            if (pc.iceGatheringState === 'complete') {
+                                pc.removeEventListener('icegatheringstatechange', checkState);
+                                resolve();
+                            }
+                        }
+                        pc.addEventListener('icegatheringstatechange', checkState);
+                    }
+                });
+            }).then(function() {
+                var offer = pc.localDescription;
+                console.log("Offer SDP:", offer.sdp);
+                // 서버의 /offer 엔드포인트로 offer 전송
+                return fetch('/offer', {
+                    body: JSON.stringify({
+                        sdp: offer.sdp,
+                        type: offer.type,
+                    }),
+                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST'
+                });
+            }).then(function(response) {
+                return response.json();
+            }).then(function(answer) {
+                console.log("Answer SDP:", answer.sdp);
+                return pc.setRemoteDescription(answer);
+            }).catch(function(e) {
+                alert(e);
+            });
+        }
+
+        function start() {
+            document.getElementById('start').style.display = 'none';
+            pc = new RTCPeerConnection();
+
+            // 서버로부터 비디오 트랙을 받으면 remote-video 요소에 연결
+            pc.ontrack = function(event) {
+                document.getElementById('remote-video').srcObject = event.streams[0];
+            };
+
+            // 로컬 웹캠 스트림을 가져와서 local-video 요소와 PeerConnection에 추가
+            navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                .then(function(stream) {
+                    document.getElementById('local-video').srcObject = stream;
+                    stream.getTracks().forEach(function(track) {
+                        pc.addTrack(track, stream);
+                    });
+                    return negotiate();
+                }, function(err) {
+                    alert('Could not acquire media: ' + err);
+                });
+            document.getElementById('stop').style.display = 'inline-block';
+        }
+
+        function stop() {
+            document.getElementById('stop').style.display = 'none';
+            // 모든 트랙과 연결 종료
+            if (pc && pc.getTransceivers) {
+                pc.getTransceivers().forEach(function(transceiver) {
+                    if (transceiver.stop) {
+                        transceiver.stop();
+                    }
+                });
+            }
+            if (pc && pc.getSenders) {
+                pc.getSenders().forEach(function(sender) {
+                    if (sender.track) {
+                        sender.track.stop();
+                    }
+                });
+            }
+            if (pc) {
+                setTimeout(function() {
+                    pc.close();
+                }, 500);
+            }
+            document.getElementById('start').style.display = 'inline-block';
+        }
+    </script>
+</body>
+</html> 
